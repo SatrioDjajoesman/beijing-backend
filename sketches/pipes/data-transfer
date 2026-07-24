@@ -1,0 +1,196 @@
+#include <WiFi.h>
+#include <WebSocketsClient.h>
+#include "HX711.h"
+
+// --- Device Identity ---
+// IMPORTANT: change this to a unique value on each of the 3 ESP32 boards
+// before uploading, e.g. "esp32-1", "esp32-2", "esp32-3"
+const char* DEVICE_ID = "esp32-1";
+
+// --- WiFi Credentials ---
+const char* WIFI_SSID = "Abuserin wifi6";
+const char* WIFI_PASSWORD = "Alderar2019";
+
+// --- WebSocket Server (your laptop) ---
+const char* WS_HOST = "192.168.50.193";
+const uint16_t WS_PORT = 8080;
+const char* WS_PATH = "/";
+
+WebSocketsClient webSocket;
+
+// --- Moisture Sensor Pins ---
+const int moisturePin1 = 32;
+const int moisturePin2 = 35;
+const int moisturePin3 = 34;
+
+// --- Moisture Calibration Thresholds ---
+// Adjust these numbers based on your specific soil tests!
+const int DRY_THRESHOLD = 3200; // Readings HIGHER than this are "Dry"
+const int WET_THRESHOLD = 2200; // Readings LOWER than this are "Wet"
+
+// --- Pressure Sensor Pins (Updated Layout) ---
+// Sensor 1
+const int PRESS_1_OUT = 21;
+const int PRESS_1_SCK = 5;
+
+// Sensor 2
+const int PRESS_2_OUT = 19;
+const int PRESS_2_SCK = 4;
+
+// Sensor 3
+const int PRESS_3_OUT = 22;
+const int PRESS_3_SCK = 18;
+
+// Initialize three separate sensor objects
+HX711 sensor1;
+HX711 sensor2;
+HX711 sensor3;
+
+const unsigned long SEND_INTERVAL_MS = 1000;
+unsigned long lastSendTime = 0;
+
+// --- Helper Function to Translate Numbers to Words ---
+String getMoistureStatus(int analogValue) {
+  if (analogValue >= DRY_THRESHOLD) {
+    return "Dry";
+  } else if (analogValue <= WET_THRESHOLD) {
+    return "Wet";
+  } else {
+    return "Moist";
+  }
+}
+
+void connectWiFi() {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(WIFI_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println();
+  Serial.print("WiFi connected. IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+  switch (type) {
+    case WStype_DISCONNECTED:
+      Serial.println("[WS] Disconnected");
+      break;
+    case WStype_CONNECTED:
+      Serial.print("[WS] Connected to ");
+      Serial.println((char *)payload);
+      webSocket.sendTXT("{\"type\":\"hello\",\"device\":\"" + String(DEVICE_ID) + "\"}");
+      break;
+    case WStype_TEXT:
+      Serial.print("[WS] Received: ");
+      Serial.println((char *)payload);
+      break;
+    case WStype_ERROR:
+      Serial.println("[WS] Error");
+      break;
+    default:
+      break;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Starting Sensors...");
+
+  // Setup moisture pins
+  pinMode(moisturePin1, INPUT);
+  pinMode(moisturePin2, INPUT);
+  pinMode(moisturePin3, INPUT);
+
+  // Initialize the pressure sensors with the new pin pairs
+  sensor1.begin(PRESS_1_OUT, PRESS_1_SCK);
+  sensor2.begin(PRESS_2_OUT, PRESS_2_SCK);
+  sensor3.begin(PRESS_3_OUT, PRESS_3_SCK);
+
+  connectWiFi();
+
+  webSocket.begin(WS_HOST, WS_PORT, WS_PATH);
+  webSocket.onEvent(webSocketEvent);
+  webSocket.setReconnectInterval(3000);
+}
+
+void loop() {
+  webSocket.loop();
+
+  if (WiFi.status() != WL_CONNECTED) {
+    connectWiFi();
+  }
+
+  unsigned long now = millis();
+  if (now - lastSendTime < SEND_INTERVAL_MS) {
+    return;
+  }
+  lastSendTime = now;
+
+  // ==========================================
+  // 1. Read Moisture Sensors
+  // ==========================================
+  int moist1 = analogRead(moisturePin1);
+  int moist2 = analogRead(moisturePin2);
+  int moist3 = analogRead(moisturePin3);
+
+  String moistStatus1 = getMoistureStatus(moist1);
+  String moistStatus2 = getMoistureStatus(moist2);
+  String moistStatus3 = getMoistureStatus(moist3);
+
+  Serial.println("--- Moisture Readings ---");
+  Serial.print("Sensor 1 (D32): "); Serial.print(moist1); Serial.print(" -> "); Serial.println(moistStatus1);
+  Serial.print("Sensor 2 (D35): "); Serial.print(moist2); Serial.print(" -> "); Serial.println(moistStatus2);
+  Serial.print("Sensor 3 (D34): "); Serial.print(moist3); Serial.print(" -> "); Serial.println(moistStatus3);
+
+  // ==========================================
+  // 2. Read Pressure Sensors
+  // ==========================================
+  bool p1Ready = sensor1.is_ready();
+  bool p2Ready = sensor2.is_ready();
+  bool p3Ready = sensor3.is_ready();
+
+  long press1 = p1Ready ? sensor1.read() : 0;
+  long press2 = p2Ready ? sensor2.read() : 0;
+  long press3 = p3Ready ? sensor3.read() : 0;
+
+  Serial.println("--- Pressure Readings ---");
+  if (p1Ready) { Serial.print("Pressure 1 (OUT:21/SCK:5):  "); Serial.println(press1); }
+  else { Serial.println("Pressure 1 not ready. (Check wiring on 21/5)"); }
+
+  if (p2Ready) { Serial.print("Pressure 2 (OUT:19/SCK:4):  "); Serial.println(press2); }
+  else { Serial.println("Pressure 2 not ready. (Check wiring on 19/4)"); }
+
+  if (p3Ready) { Serial.print("Pressure 3 (OUT:22/SCK:18): "); Serial.println(press3); }
+  else { Serial.println("Pressure 3 not ready. (Check wiring on 22/18)"); }
+
+  Serial.println("=========================\n");
+
+  // ==========================================
+  // 3. Send data over WebSocket (live)
+  // ==========================================
+  if (webSocket.isConnected()) {
+    String json = "{";
+    json += "\"device\":\"" + String(DEVICE_ID) + "\",";
+    json += "\"timestamp\":" + String(now) + ",";
+    json += "\"moisture\":{";
+    json += "\"s1\":{\"raw\":" + String(moist1) + ",\"status\":\"" + moistStatus1 + "\"},";
+    json += "\"s2\":{\"raw\":" + String(moist2) + ",\"status\":\"" + moistStatus2 + "\"},";
+    json += "\"s3\":{\"raw\":" + String(moist3) + ",\"status\":\"" + moistStatus3 + "\"}";
+    json += "},";
+    json += "\"pressure\":{";
+    json += "\"s1\":{\"ready\":" + String(p1Ready ? "true" : "false") + ",\"value\":" + String(press1) + "},";
+    json += "\"s2\":{\"ready\":" + String(p2Ready ? "true" : "false") + ",\"value\":" + String(press2) + "},";
+    json += "\"s3\":{\"ready\":" + String(p3Ready ? "true" : "false") + ",\"value\":" + String(press3) + "}";
+    json += "}";
+    json += "}";
+
+    webSocket.sendTXT(json);
+  }
+}

@@ -1,0 +1,205 @@
+#include <WiFi.h>
+#include <WebSocketsClient.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
+// --- Configuration ---
+const char* ssid     = "Abuserin wifi6";
+const char* password = "Alderar2019";
+
+// WebSocket Server Details (Change to match your server)
+const char* ws_host = "192.168.50.193"; // Your server IP or domain
+const int ws_port   = 8083;               // Your server port (container_final.py listens on 8083)
+const char* ws_path = "/";                // Your WebSocket path
+
+// This one relay pin drives the pump and valve on OPPOSITE contacts (pump
+// on NC, valve on NO), so the two are always in inverse states — there's
+// no scenario where both are open/on or both closed/off:
+//   HIGH -> Relay energized   -> valve powered OPEN,  pump unpowered OFF
+//   LOW  -> Relay de-energized -> valve unpowered CLOSED, pump powered ON
+// Fully autonomous: no keybinds/commands drive this anymore. The pH
+// reading below decides the state directly, every cycle.
+const int relayPin = 23;
+
+// --- pH Sensor ---
+const int pHPin = 34;
+
+// Healthy range: valve stays OPEN / pump stays OFF while pH is in this
+// band. Anything outside it (too acidic or too basic) closes the valve
+// and turns the pump on until pH is back in range.
+const float PH_HEALTHY_MIN = 6.5;
+const float PH_HEALTHY_MAX = 8.5;
+
+// Same filtering/calibration algorithm previously run server-side, now run
+// on-device so the relay can react immediately without a round trip.
+const float PH_CALIBRATION = 21.34 + 1.5;
+
+// Takes 10 samples, discards the 2 lowest and 2 highest (noise/spikes),
+// and averages the middle 6 for a stable voltage reading.
+float readPHVoltageFiltered() {
+  int samples[10];
+  for (int i = 0; i < 10; i++) {
+    samples[i] = analogRead(pHPin);
+    delay(30);
+  }
+
+  // Bubble sort ascending
+  for (int i = 0; i < 9; i++) {
+    for (int j = i + 1; j < 10; j++) {
+      if (samples[i] > samples[j]) {
+        int temp = samples[i];
+        samples[i] = samples[j];
+        samples[j] = temp;
+      }
+    }
+  }
+
+  unsigned long sumMiddle = 0;
+  for (int i = 2; i < 8; i++) {
+    sumMiddle += samples[i];
+  }
+
+  return (float)sumMiddle * 3.3 / 4095.0 / 6;
+}
+
+const unsigned long PH_SEND_INTERVAL_MS = 1000;
+unsigned long lastPHSendTime = 0;
+
+// --- Simulation mode (for demoing without changing the real water pH) ---
+// Toggled from container_final.py (Ctrl+Y). While active, the pH used for
+// the valve/pump decision is simulatedPH instead of the live sensor
+// reading; L/K (sent as SIM_INC/SIM_DEC) step it by 0.1, clamped to the
+// valid pH range [0, 14].
+bool simulationMode = false;
+float simulatedPH = 7.0; // neutral starting point
+
+WebSocketsClient webSocket;
+
+// --- WebSocket Event Handler ---
+void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
+  switch(type) {
+    case WStype_DISCONNECTED:
+      Serial.println("[WS] Disconnected!");
+      break;
+
+    case WStype_CONNECTED:
+      Serial.printf("[WS] Connected to url: %s\n", payload);
+      // Optional: Send a message to server upon connecting
+      webSocket.sendTXT("ESP32 Connected");
+      break;
+
+    case WStype_TEXT: {
+      // The relay/valve are still fully automatic based on pH — the only
+      // commands accepted are for toggling/steering simulated pH.
+      String message = String((char*)(payload));
+      Serial.printf("[WS] Received text: %s\n", payload);
+
+      if (message == "SIM_ON") {
+        simulationMode = true;
+        Serial.println("Simulation mode ON");
+        webSocket.sendTXT("Status: Simulation mode ON");
+      }
+      else if (message == "SIM_OFF") {
+        simulationMode = false;
+        Serial.println("Simulation mode OFF");
+        webSocket.sendTXT("Status: Simulation mode OFF");
+      }
+      else if (message == "SIM_INC") {
+        simulatedPH = constrain(simulatedPH + 0.1, 0.0, 14.0);
+        Serial.print("Simulated pH increased to ");
+        Serial.println(simulatedPH, 2);
+        webSocket.sendTXT("Status: Simulated pH " + String(simulatedPH, 2));
+      }
+      else if (message == "SIM_DEC") {
+        simulatedPH = constrain(simulatedPH - 0.1, 0.0, 14.0);
+        Serial.print("Simulated pH decreased to ");
+        Serial.println(simulatedPH, 2);
+        webSocket.sendTXT("Status: Simulated pH " + String(simulatedPH, 2));
+      }
+      break;
+    }
+  }
+}
+
+void setup() {
+  // Disable the brownout detector so a WiFi current spike coinciding with
+  // the relay switching can't reset the ESP32 mid-command.
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  // Relay LOW = valve closed, pump ON — the safe/protective default until
+  // the first real pH reading comes in a moment later. Set this first,
+  // before anything else runs.
+  pinMode(relayPin, OUTPUT);
+  digitalWrite(relayPin, LOW);
+
+  Serial.begin(115200);
+
+  // Initialize pH sensor pin
+  pinMode(pHPin, INPUT);
+
+  // Connect to Wi-Fi
+  Serial.print("Connecting to Wi-Fi");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(5000);
+    Serial.print(".");
+  }
+  Serial.println("\nWi-Fi Connected!");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Initialize WebSocket connection
+  // server address, port, and URL path
+  webSocket.begin(ws_host, ws_port, ws_path);
+  
+  // Assign the event handler function we wrote above
+  webSocket.loop(); 
+  webSocket.onEvent(webSocketEvent);
+  
+  // Try to reconnect automatically if disconnected
+  webSocket.setReconnectInterval(5000);
+}
+
+void loop() {
+  // This vital function processes the incoming WebSocket data behind the scenes.
+  // Do NOT use long delay() functions here anymore, or the connection will drop!
+  webSocket.loop();
+
+  unsigned long now = millis();
+  if (now - lastPHSendTime < PH_SEND_INTERVAL_MS) {
+    return;
+  }
+  lastPHSendTime = now;
+
+  float voltage = 0.0;
+  float pH;
+
+  if (simulationMode) {
+    pH = simulatedPH;
+  } else {
+    voltage = readPHVoltageFiltered();
+    pH = -5.70 * voltage + PH_CALIBRATION;
+  }
+
+  bool healthy = (pH >= PH_HEALTHY_MIN && pH <= PH_HEALTHY_MAX);
+  digitalWrite(relayPin, healthy ? HIGH : LOW);
+
+  Serial.print(simulationMode ? "pH (SIMULATED): " : "pH: ");
+  Serial.print(pH, 2);
+  Serial.println(healthy ? "  -> Valve OPEN, Pump OFF" : "  -> Valve CLOSED, Pump ON");
+
+  if (webSocket.isConnected()) {
+    String json = "{";
+    json += "\"timestamp\":" + String(now) + ",";
+    json += "\"pH\":{";
+    json += "\"voltage\":" + String(voltage, 3) + ",";
+    json += "\"value\":" + String(pH, 2);
+    json += "},";
+    json += "\"valve_open\":" + String(healthy ? "true" : "false") + ",";
+    json += "\"pump_on\":" + String(healthy ? "false" : "true") + ",";
+    json += "\"simulated\":" + String(simulationMode ? "true" : "false");
+    json += "}";
+
+    webSocket.sendTXT(json);
+  }
+}
