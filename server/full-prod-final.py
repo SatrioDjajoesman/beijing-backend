@@ -27,12 +27,16 @@ import asyncio
 import json
 import sqlite3
 import sys
-import termios
-import tty
 from datetime import datetime
 from pathlib import Path
 
 import websockets
+
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import termios
+    import tty
 
 HOST = "0.0.0.0"  # listen on all interfaces
 
@@ -292,6 +296,9 @@ async def send_container_command(command: str):
 
 def read_key() -> str:
     """Blocking read of a single keypress from stdin, no Enter required."""
+    if sys.platform == "win32":
+        return msvcrt.getch().decode(errors="ignore")
+
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
