@@ -72,7 +72,7 @@ def init_db():
             raw REAL,
             status TEXT,
             ready INTEGER,
-            value REAL
+            value REAL          -- pressure: calibrated kPa (data-transfer-calibrated sketch); raw ADC count if using the uncalibrated sketch
         )
         """
     )
@@ -106,7 +106,7 @@ def log_reading(device_id: str, data: dict):
 
     for position, sensor in data.get("pressure", {}).items():
         ready = sensor.get("ready")
-        rows.append((ts, device_id, "pressure", position, None, None, int(bool(ready)) if ready is not None else None, sensor.get("value")))
+        rows.append((ts, device_id, "pressure", position, sensor.get("raw"), None, int(bool(ready)) if ready is not None else None, sensor.get("value")))
 
     if rows:
         db_conn.executemany(
