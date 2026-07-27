@@ -68,6 +68,21 @@ const float CALIBRATION_FACTOR_3 = 1.0; // TODO: replace with measured value for
 const unsigned long SEND_INTERVAL_MS = 1000;
 unsigned long lastSendTime = 0;
 
+// Waits for the sensor to report ready before taring, instead of tareing
+// only if it happens to already be ready. HX710B often isn't ready
+// immediately after begin(), so a one-shot is_ready() check can race and
+// silently skip the tare, leaving OFFSET at 0 and raw ADC counts flowing
+// straight through as the "calibrated" reading.
+bool tareWithTimeout(HX711 &sensor, unsigned long timeoutMs = 1000) {
+  unsigned long start = millis();
+  while (!sensor.is_ready()) {
+    if (millis() - start > timeoutMs) return false;
+    delay(1);
+  }
+  sensor.tare();
+  return true;
+}
+
 // --- Helper Function to Translate Numbers to Words ---
 String getMoistureStatus(int analogValue) {
   if (analogValue >= DRY_THRESHOLD) {
@@ -139,9 +154,9 @@ void setup() {
   sensor2.set_scale(CALIBRATION_FACTOR_2);
   sensor3.set_scale(CALIBRATION_FACTOR_3);
 
-  if (sensor1.is_ready()) sensor1.tare();
-  if (sensor2.is_ready()) sensor2.tare();
-  if (sensor3.is_ready()) sensor3.tare();
+  if (!tareWithTimeout(sensor1)) Serial.println("Sensor 1 tare timed out (not ready).");
+  if (!tareWithTimeout(sensor2)) Serial.println("Sensor 2 tare timed out (not ready).");
+  if (!tareWithTimeout(sensor3)) Serial.println("Sensor 3 tare timed out (not ready).");
 
   connectWiFi();
 
