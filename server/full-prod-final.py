@@ -129,10 +129,10 @@ def log_reading(device_id: str, data: dict):
 # Pipe simulation mode — synthesizes esp32-1/2/3 readings so the demo
 # doesn't depend on the physical rig. Targets below encode the three
 # scenarios from the drilled-hole trials: pipe 1 healthy, pipe 2 leaking
-# at every sensor (holes at all three points), pipe 3 leaking only at the
-# middle zone (pressure/moisture upstream and downstream of the hole
-# still read close to normal — the hole, not distance from it, is what
-# makes a zone read as a leak).
+# only at the middle zone (pressure/moisture upstream and downstream of
+# the hole still read close to normal — the hole, not distance from it,
+# is what makes a zone read as a leak), pipe 3 leaking at every sensor
+# (holes at all three points).
 # ============================================================
 
 PIPE_SIM_INTERVAL = 0.5 # seconds between simulated readings
@@ -143,8 +143,8 @@ MOISTURE_JITTER = 150
 
 PIPE_SIM_TARGETS = {
     "esp32-1": {"start": (35, "Dry"), "middle": (35, "Dry"), "end": (35, "Dry")},
-    "esp32-2": {"start": (15, "Wet"), "middle": (15, "Wet"), "end": (15, "Wet")},
-    "esp32-3": {"start": (36, "Dry"), "middle": (29, "Wet"), "end": (0, "Dry")},
+    "esp32-2": {"start": (36, "Dry"), "middle": (20, "Wet"), "end": (0, "Dry")},
+    "esp32-3": {"start": (15, "Wet"), "middle": (15, "Wet"), "end": (15, "Wet")},
 }
 
 pipe_simulation_mode = False
