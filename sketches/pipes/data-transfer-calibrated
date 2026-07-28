@@ -61,9 +61,9 @@ HX711 sensor3;
 //      and note the raw reading printed over Serial.
 //   3. CALIBRATION_FACTOR = raw_reading / known_kPa
 // get_units() then returns kPa directly once the correct factor is set.
-const float CALIBRATION_FACTOR_1 = 1.0; // TODO: replace with measured value for sensor1
-const float CALIBRATION_FACTOR_2 = 1.0; // TODO: replace with measured value for sensor2
-const float CALIBRATION_FACTOR_3 = 1.0; // TODO: replace with measured value for sensor3
+const float CALIBRATION_FACTOR_1 = 40000; // TODO: replace with measured value for sensor1
+const float CALIBRATION_FACTOR_2 = 40000; // TODO: replace with measured value for sensor2
+const float CALIBRATION_FACTOR_3 = 40000; // TODO: replace with measured value for sensor3
 
 const unsigned long SEND_INTERVAL_MS = 1000;
 unsigned long lastSendTime = 0;

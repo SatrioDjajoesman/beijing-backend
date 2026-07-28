@@ -17,6 +17,9 @@ Run this on your laptop (192.168.50.193), on the same WiFi network
     Press 't' to toggle filtration simulation mode on/off.
     Press 'l' to increase simulated pH by 0.1.
     Press 'k' to decrease simulated pH by 0.1.
+    Press 'r' to toggle pipe simulation mode on/off (same as pressing 'R' in
+        the frontend's Pipes View — synthesizes readings for esp32-1/2/3
+        without needing real hardware; see PIPE_SIM_TARGETS below).
     Press 'q' to quit.
 
 Install dependency:
@@ -25,6 +28,7 @@ Install dependency:
 
 import asyncio
 import json
+import random
 import sqlite3
 import sys
 from datetime import datetime
@@ -121,6 +125,71 @@ def log_reading(device_id: str, data: dict):
     db_conn.commit()
 
 
+# ============================================================
+# Pipe simulation mode — synthesizes esp32-1/2/3 readings so the demo
+# doesn't depend on the physical rig. Targets below encode the three
+# scenarios from the drilled-hole trials: pipe 1 healthy, pipe 2 leaking
+# at every sensor (holes at all three points), pipe 3 leaking only at the
+# middle zone (pressure/moisture upstream and downstream of the hole
+# still read close to normal — the hole, not distance from it, is what
+# makes a zone read as a leak).
+# ============================================================
+
+PIPE_SIM_INTERVAL = 2.5  # seconds between simulated readings
+PRESSURE_JITTER = 8  # +/- kPa noise around each target
+MOISTURE_DRY_RAW = 3200  # matches frontend's MOISTURE_DRY_RAW
+MOISTURE_WET_RAW = 2200  # matches frontend's MOISTURE_WET_RAW
+MOISTURE_JITTER = 150
+
+PIPE_SIM_TARGETS = {
+    "esp32-1": {"start": (35, "Dry"), "middle": (35, "Dry"), "end": (35, "Dry")},
+    "esp32-2": {"start": (15, "Wet"), "middle": (15, "Wet"), "end": (15, "Wet")},
+    "esp32-3": {"start": (36, "Dry"), "middle": (29, "Wet"), "end": (0, "Dry")},
+}
+
+pipe_simulation_mode = False
+pipe_sim_task: asyncio.Task | None = None
+
+
+def simulated_pipe_payload(device_id: str) -> dict:
+    moisture = {}
+    pressure = {}
+    for position, (target_kpa, state) in PIPE_SIM_TARGETS[device_id].items():
+        pressure_value = max(0.0, target_kpa + random.uniform(-PRESSURE_JITTER, PRESSURE_JITTER))
+        moisture_ref = MOISTURE_WET_RAW if state == "Wet" else MOISTURE_DRY_RAW
+        moisture_raw = moisture_ref + random.uniform(-MOISTURE_JITTER, MOISTURE_JITTER)
+        pressure[position] = {"ready": True, "value": round(pressure_value, 1)}
+        moisture[position] = {"raw": round(moisture_raw, 1), "status": state}
+    return {"device": device_id, "moisture": moisture, "pressure": pressure, "simulated": True}
+
+
+async def pipe_simulation_loop():
+    try:
+        while True:
+            for device_id in PIPE_SIM_TARGETS:
+                data = simulated_pipe_payload(device_id)
+                pipe_latest_data[device_id] = data
+                log_reading(device_id, data)
+                if pipe_viewers:
+                    websockets.broadcast(
+                        pipe_viewers, json.dumps({"type": "update", "device": device_id, "data": data})
+                    )
+            await asyncio.sleep(PIPE_SIM_INTERVAL)
+    except asyncio.CancelledError:
+        raise
+
+
+async def toggle_pipe_simulation():
+    global pipe_simulation_mode, pipe_sim_task
+    pipe_simulation_mode = not pipe_simulation_mode
+    if pipe_simulation_mode:
+        pipe_sim_task = asyncio.create_task(pipe_simulation_loop())
+    elif pipe_sim_task is not None:
+        pipe_sim_task.cancel()
+        pipe_sim_task = None
+    print(f"[pipes] [state] Simulation mode is now {'ON' if pipe_simulation_mode else 'OFF'}")
+
+
 async def handle_pipe_client(websocket):
     remote = websocket.remote_address
     device_id = None
@@ -146,6 +215,13 @@ async def handle_pipe_client(websocket):
                 device_id = data.get("device", f"unknown-{remote[0]}:{remote[1]}")
                 pipe_connected_devices[websocket] = device_id
                 print(f"[pipes] [{timestamp}] Handshake complete: '{device_id}' connected from {remote}")
+                continue
+
+            if data.get("type") == "command":
+                command = data.get("command")
+                if command == "PIPE_SIM_TOGGLE":
+                    print(f"[pipes] [{timestamp}] [<] Command from viewer {remote}: {command}")
+                    await toggle_pipe_simulation()
                 continue
 
             device_id = data.get("device", device_id or "unknown")
@@ -326,7 +402,7 @@ async def command_loop():
     loop = asyncio.get_event_loop()
     print(
         "'t' to toggle filtration simulation mode, 'l' to raise simulated pH by 0.1, "
-        "'k' to lower it by 0.1. Press 'q' to quit."
+        "'k' to lower it by 0.1, 'r' to toggle pipe simulation mode. Press 'q' to quit."
     )
 
     while True:
@@ -338,6 +414,8 @@ async def command_loop():
             await step_simulated_ph(True)
         elif key.lower() == "k":
             await step_simulated_ph(False)
+        elif key.lower() == "r":
+            await toggle_pipe_simulation()
         elif key.lower() == "q":
             print("Exiting...")
             return
