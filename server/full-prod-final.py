@@ -135,8 +135,8 @@ def log_reading(device_id: str, data: dict):
 # makes a zone read as a leak).
 # ============================================================
 
-PIPE_SIM_INTERVAL = 2.5  # seconds between simulated readings
-PRESSURE_JITTER = 8  # +/- kPa noise around each target
+PIPE_SIM_INTERVAL = 0.5 # seconds between simulated readings
+PRESSURE_JITTER = 3  # +/- kPa noise around each target
 MOISTURE_DRY_RAW = 3200  # matches frontend's MOISTURE_DRY_RAW
 MOISTURE_WET_RAW = 2200  # matches frontend's MOISTURE_WET_RAW
 MOISTURE_JITTER = 150
